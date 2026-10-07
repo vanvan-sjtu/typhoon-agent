@@ -58,6 +58,14 @@
     max-width:600px;
     accent-color:#222;
   }
+  #typhoonCaseSelect{
+    padding:8px 10px;
+    border:1px solid #aaa;
+    border-radius:6px;
+    font-size:14px;
+    background:#fff;
+    color:#111;
+  }
   .report-wrap{
     margin-top:16px;
     padding:20px 24px;
@@ -108,6 +116,14 @@
   <h1 class="page-title">台风灾害评估预警系统</h1>
   <div id="container"></div>
   <div id="controlPanel">
+    <span>案例选择：</span>
+    <select id="typhoonCaseSelect">
+      <option value="custom">自定义台风</option>
+      <option value="meihua">2022 梅花｜巅峰42m/s 强台风</option>
+      <option value="doksuri">2023 杜苏芮｜巅峰58m/s 超强台风</option>
+      <option value="mokarot">2024 摩羯｜巅峰52m/s 超强台风</option>
+      <option value="bavi">2025 贝碧嘉｜巅峰45m/s 强台风</option>
+    </select>
     <span>中心风速：<span id="windText">35</span> m/s</span>
     <input type="range" id="sliderWind" min="15" max="85" value="35" step="1">
     <span class="hint-text">（15~85m/s，热带低压 → 历史级超强台风）</span>
@@ -126,6 +142,15 @@ let p;
 
 let circle7, circle10, circle12;
 let typhoonMarker;
+
+// 近年真实台风案例库（巅峰最大风力）
+const typhoonCaseLibrary = {
+  custom:{name:"自定义台风", wind:35, desc:"手动调整风速，自由模拟"},
+  meihua:{name:"梅花", wind:42, desc:"2022，强台风，影响江浙沪鲁，多次登陆"},
+  doksuri:{name:"杜苏芮", wind:58, desc:"2023，超强台风，福建登陆，引发华北特大暴雨"},
+  mokarot:{name:"摩羯", wind:52, desc:"2024，超强台风，海南登陆，强风暴雨灾害"},
+  bavi:{name:"贝碧嘉", wind:45, desc:"2025，强台风，登陆上海，华东大风降雨"}
+};
 
 const AGENT_CONFIG = {
   windThreshold: {low:17, mid:24.5, high:32.7, extreme:41.5},
@@ -606,9 +631,10 @@ function updateTyphoonOverlay(){
   typhoonData.radius = r7;
 }
 
-function initTyphoonData(windSpeed=35){
+function initTyphoonData(windSpeed=35, typhoonName="模拟台风", typhoonDesc=""){
   typhoonData = {
-    name:"模拟台风",
+    name:typhoonName,
+    desc:typhoonDesc,
     lng:120.0,
     lat:32.0,
     wind: windSpeed,
@@ -666,7 +692,7 @@ function evaluateRisk(){
   };
 }
 
-// ========== 修复报告模板：强制固定【预估受灾人口】行，不会丢失 ==========
+// ========== 报告模板【新增：社会经济特征与脆弱人群板块 + 案例备注】 ==========
 function generateLLMReport(evalResult){
   const tc = getTyphoonClass(typhoonData.wind);
   const prov = evalResult.provinceInfo;
@@ -686,15 +712,24 @@ function generateLLMReport(evalResult){
 
   const reportText = `【模拟台风灾害评估报告】
 台风：${typhoonData.name}，台风等级：${tc}，综合风险等级：${evalResult.riskLevel}
+案例备注：${typhoonData.desc}
 台风中心坐标：经度${typhoonData.lng.toFixed(2)}，纬度${typhoonData.lat.toFixed(2)}
 所属行政区：${prov.name}
 地形高程：${elev} m，地形类型：${prov.terrainType}
 ${popStr}
+
+===== 社会经济特征与脆弱人群分析 =====
+人口密度：${prov.popDensity} 人/km²
+脆弱人口（老人+儿童）占比：${(prov.oldChildRatio*100).toFixed(1)}%
+区域脆弱性得分：${evalResult.vulScore.toFixed(2)}
+> 说明：脆弱人群包含老年人、学龄前儿童，该群体自救能力弱，在同等台风强度下伤亡风险更高。
+> 人口密度越高、老幼占比越大，区域社会脆弱性越高，灾害损失更容易放大。
+
 > 实况：中心风速${typhoonData.wind}m/s，中心气压${typhoonData.pressure.toFixed(0)}hPa，向西北移动。
 > 7级风圈半径：${typhoonData.radius.toFixed(1)}km；10级风圈：${calcR10(typhoonData.wind).toFixed(1)}km；12级风圈：${calcR12(typhoonData.wind).toFixed(1)}km
 > 区域特征：${prov.terrainDesc}
 > 风险研判：综合风险指数${evalResult.totalScore.toFixed(2)}。高程${elev}m，${elev<50?"地势低洼，暴雨易形成内涝":(elev>500?"山地地形，暴雨诱发滑坡泥石流风险高":"地势中等，需关注流域洪水")}
-> 应急建议：结合区域人口暴露与地形条件，优先转移低洼、山区危险区域人员，加固构筑物，监测雨情地质灾害。
+> 应急建议：结合区域人口暴露与地形条件，优先转移低洼、山区危险区域内的老人、儿童等脆弱人群，加固构筑物，监测雨情地质灾害。
 > 备注：受灾人口为简化模型估算，仅用于模拟演示，未精细考虑城镇分布、疏散、风圈跨多省情况。`;
 
   document.getElementById("report").innerText = reportText;
@@ -711,12 +746,29 @@ function setup(){
 
   const slider = document.getElementById("sliderWind");
   const windTextDom = document.getElementById("windText");
+  const caseSelect = document.getElementById("typhoonCaseSelect");
+
+  // 下拉案例切换事件
+  caseSelect.onchange = function(){
+    const caseKey = this.value;
+    const selectedCase = typhoonCaseLibrary[caseKey];
+    typhoonData.name = selectedCase.name;
+    typhoonData.desc = selectedCase.desc;
+    typhoonData.wind = selectedCase.wind;
+    typhoonData.pressure = 1005 - selectedCase.wind*0.85;
+    slider.value = selectedCase.wind;
+    windTextDom.innerText = selectedCase.wind;
+    updateTyphoonOverlay();
+  }
+
   slider.oninput = function(){
     const newWind = Number(this.value);
     typhoonData.wind = newWind;
     typhoonData.pressure = 1005 - newWind*0.85;
     windTextDom.innerText = newWind;
     updateTyphoonOverlay();
+    // 手动拖动滑块，自动切回自定义
+    caseSelect.value = "custom";
   }
 
   document.getElementById("genReportBtn").addEventListener("click", ()=>{
