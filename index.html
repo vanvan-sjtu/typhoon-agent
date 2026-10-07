@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>台风灾害评估预警 Agent｜黑白高级版</title>
+<script src="https://cdn.jsdelivr.net/npm/p5@1/lib/addons/p5.dom.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/p5@1/lib/p5.min.js"></script>
+<!-- 高德JS API -->
+<script type="text/javascript" src="https://webapi.amap.com/maps?v=2.0&key=60d6bebd36abee2b446e9ebeae067a4c"></script>
+<style>
+  *{
+    margin:0;
+    padding:0;
+    box-sizing:border-box;
+    font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  body {
+    background-color: #f7f7f7;
+    color: #1a1a1a;
+    height:100vh;
+    overflow:auto;
+    line-height:1.55;
+  }
+  .container-wrap{
+    max-width:1440px;
+    margin: 0 auto;
+    padding:24px;
+  }
+  .page-title{
+    font-size:24px;
+    font-weight:500;
+    letter-spacing:0.04em;
+    margin-bottom:16px;
+    color:#111;
+  }
+  #container {
+    width: 100%;
+    height: 48vh;
+    border-radius:12px;
+    overflow:hidden;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+    background:#fff;
+  }
+  #controlPanel{
+    width:100%;
+    margin-top:16px;
+    padding:20px 24px;
+    background:#ffffff;
+    border-radius:12px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+    display:flex;
+    align-items:center;
+    gap:16px;
+    flex-wrap:wrap;
+  }
+  #sliderWind{
+    flex-grow:1;
+    max-width:600px;
+    accent-color:#222;
+  }
+  .report-wrap{
+    margin-top:16px;
+    padding:20px 24px;
+    background:#ffffff;
+    border-radius:12px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  }
+  #genReportBtn{
+    margin:0 0 12px 0;
+    padding:10px 22px;
+    cursor:pointer;
+    background:#1a1a1a;
+    color:#fff;
+    border:none;
+    border-radius:8px;
+    font-size:14px;
+    transition: all 0.22s ease;
+  }
+  #genReportBtn:hover{
+    background:#444;
+  }
+  #report {
+    width:100%;
+    min-height:280px;
+    padding:16px;
+    background:#f4f4f4;
+    white-space:pre-wrap;
+    border:1px solid #e6e6e6;
+    border-radius:8px;
+    font-family: "JetBrains Mono", monospace;
+    font-size:13px;
+    color:#222;
+  }
+  canvas{
+    display:block;
+    border-radius:12px;
+    margin-top:16px;
+    box-shadow:0 2px 12px rgba(0,0,0,0.06);
+  }
+  .hint-text{
+    font-size:13px;
+    color:#666;
+  }
+</style>
+</head>
+<body>
+<div class="container-wrap">
+  <h1 class="page-title">台风灾害评估预警系统</h1>
+  <div id="container"></div>
+  <div id="controlPanel">
+    <span>中心风速：<span id="windText">35</span> m/s</span>
+    <input type="range" id="sliderWind" min="15" max="85" value="35" step="1">
+    <span class="hint-text">（15~85m/s，热带低压 → 历史级超强台风）</span>
+  </div>
+  <div class="report-wrap">
+    <button id="genReportBtn">生成评估报告</button>
+    <pre id="report">评估报告区域，点击上方按钮生成报告</pre>
+  </div>
+</div>
+
+<script>
+let map;
+let typhoonData = {};
+let riskLevel = "未评估";
+let p;
+
+let circle7, circle10, circle12;
+let typhoonMarker;
+
+const AGENT_CONFIG = {
+  windThreshold: {low:17, mid:24.5, high:32.7, extreme:41.5},
+  windWeight:0.4,
+  vulnerableWeight:0.35,
+  terrainWeight:0.25
+}
+
+// ===================== 风圈公式（白海豚模型） =====================
+function calcR7(windSpeed){
+  if(windSpeed <= 35){
+    return 60 + (windSpeed -15)*3.2;
+  }else{
+    return 124 + (windSpeed -35)*2.2;
+  }
+}
+function calcR10(windSpeed){
+  if(windSpeed <=35){
+    return Math.max(8, 15 + (windSpeed -20)*1.6);
+  }else{
+    return 39 + (windSpeed -35)*1.05;
+  }
+}
+function calcR12(windSpeed){
+  if(windSpeed <=35){
+    return Math.max(2, 6 + (windSpeed -25)*0.85);
+  }else{
+    return 14.5 + (windSpeed -35)*0.52;
+  }
+}
+function getTyphoonClass(wind){
+  if(wind <17.2) return "热带低压";
+  else if(wind <24.5) return "热带风暴";
+  else if(wind <32.7) return "强热带风暴";
+  else if(wind <41.5) return "台风";
+  else if(wind <50.9) return "强台风";
+  else return "超强台风";
+}
+
+// ===================== 点在多边形内算法 =====================
+function pointInPolygon(point, polygon) {
+  let x = point[0], y = point[1];
+  let inside = false;
+  for (let i = 0, j = polygon.length -1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0], yi = polygon[i][1];
+    const xj = polygon[j][0], yj = polygon[j][1];
+    const intersect = ((yi > y) != (yj > y))
+        && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+// ===================== 全国34省级行政区完整参数（人口密度、高程、地形） =====================
+const provinceList = [
+  {
+    name:"北京市",
+    popDensity:1334,
+    oldChildRatio:0.26,
+    elev:43.5,
+    terrainType:"平原为主，西北山地",
+    terrainDesc:"东南部平原人口密集，西北山地，暴雨易引发山洪",
+    poly:[[115.7,39.4],[117.5,39.4],[117.5,41.1],[115.7,41.1]]
+  },
+  {
+    name:"天津市",
+    popDensity:1194,
+    oldChildRatio:0.27,
+    elev:5,
+    terrainType:"滨海冲积平原，地势低平",
+    terrainDesc:"滨海地势低洼，风暴潮叠加暴雨易发生大面积内涝",
+    poly:[[116.7,38.5],[118.1,38.5],[118.1,39.7],[116.7,39.7]]
+  },
+  {
+    name:"河北省",
+    popDensity:382,
+    oldChildRatio:0.29,
+    elev:120,
+    terrainType:"华北平原+北部山地高原",
+    terrainDesc:"平原区人口稠密，太行山区短时暴雨易诱发山洪滑坡",
+    poly:[[113.4,36.0],[119.8,36.0],[119.8,42.6],[113.4,42.6]]
+  },
+  {
+    name:"山西省",
+    popDensity:212,
+    oldChildRatio:0.30,
+    elev:1000,
+    terrainType:"黄土高原，山地丘陵为主",
+    terrainDesc:"黄土沟壑广布，强降雨极易诱发滑坡、崩塌",
+    poly:[[110.2,34.5],[114.7,34.5],[114.7,40.8],[110.2,40.8]]
+  },
+  {
+    name:"内蒙古自治区",
+    popDensity:21,
+    oldChildRatio:0.25,
+    elev:1000,
+    terrainType:"高原、草原、荒漠",
+    terrainDesc:"地域辽阔人口稀疏，台风极少抵达，以大风灾害为主",
+    poly:[[97.2,37.4],[126.1,37.4],[126.1,53.3],[97.2,53.3]]
+  },
+  {
+    name:"辽宁省",
+    popDensity:290,
+    oldChildRatio:0.28,
+    elev:250,
+    terrainType:"辽东丘陵+辽河平原",
+    terrainDesc:"沿海平原人口集中，辽东山地暴雨易引发山洪",
+    poly:[[118.8,38.7],[125.8,38.7],[125.8,43.5],[118.8,43.5]]
+  },
+  {
+    name:"吉林省",
+    popDensity:131,
+    oldChildRatio:0.29,
+    elev:260,
+    terrainType:"东部山地，中部平原",
+    terrainDesc:"东部长白山区地质灾害风险高，平原区洪涝风险",
+    poly:[[121.6,40.8],[131.4,40.8],[131.4,46.3],[121.6,46.3]]
+  },
+  {
+    name:"黑龙江省",
+    popDensity:67,
+    oldChildRatio:0.30,
+    elev:300,
+    terrainType:"东北平原+北部山地",
+    terrainDesc:"平原广阔，人口密度低，台风北上可带来强降雨洪涝",
+    poly:[[121.1,43.4],[135.1,43.4],[135.1,53.6],[121.1,53.6]]
+  },
+  {
+    name:"上海市",
+    popDensity:3800,
+    oldChildRatio:0.27,
+    elev:4,
+    terrainType:"河口冲积平原，地势极低",
+    terrainDesc:"地势极低平，风暴潮叠加暴雨极易造成严重城市内涝",
+    poly:[[120.8,30.6],[122.0,30.6],[122.0,31.5],[120.8,31.5]]
+  },
+  {
+    name:"江苏省",
+    popDensity:790,
+    oldChildRatio:0.31,
+    elev:20,
+    terrainType:"平原为主，局部低洼",
+    terrainDesc:"地势平坦低洼，台风带来暴雨极易引发城市内涝",
+    poly:[[116.3,30.7],[122.3,30.7],[122.3,35.2],[116.3,35.2]]
+  },
+  {
+    name:"浙江省",
+    popDensity:610,
+    oldChildRatio:0.29,
+    elev:300,
+    terrainType:"丘陵山地+沿海平原",
+    terrainDesc:"多山地丘陵，暴雨易诱发山洪、滑坡；沿海平原风灾显著",
+    poly:[[117.8,27.0],[123.2,27.0],[123.2,31.3],[117.8,31.3]]
+  },
+  {
+    name:"安徽省",
+    popDensity:490,
+    oldChildRatio:0.30,
+    elev:120,
+    terrainType:"平原+丘陵",
+    terrainDesc:"皖北平原易涝，皖南山区存在地质灾害风险",
+    poly:[[114.8,29.0],[119.7,29.0],[119.7,34.7],[114.8,34.7]]
+  },
+  {
+    name:"福建省",
+    popDensity:330,
+    oldChildRatio:0.26,
+    elev:450,
+    terrainType:"山地丘陵为主",
+    terrainDesc:"八山一水一分田，台风暴雨极易触发滑坡泥石流",
+    poly:[[115.5,23.5],[120.8,23.5],[120.8,28.3],[115.5,28.3]]
+  },
+  {
+    name:"江西省",
+    popDensity:271,
+    oldChildRatio:0.29,
+    elev:250,
+    terrainType:"江南丘陵，北部鄱阳湖平原",
+    terrainDesc:"北部湖区地势低洼易涝，南部丘陵山洪滑坡风险高",
+    poly:[[113.5,24.4],[118.6,24.4],[118.6,30.1],[113.5,30.1]]
+  },
+  {
+    name:"山东省",
+    popDensity:640,
+    oldChildRatio:0.28,
+    elev:150,
+    terrainType:"平原+低山丘陵",
+    terrainDesc:"华北平原为主，局部山地，内陆对台风防灾经验不足",
+    poly:[[114.5,34.3],[122.8,34.3],[122.8,38.5],[114.5,38.5]]
+  },
+  {
+    name:"河南省",
+    popDensity:595,
+    oldChildRatio:0.30,
+    elev:130,
+    terrainType:"黄淮平原+西部山地",
+    terrainDesc:"平原人口稠密，豫西山区短时暴雨易引发山洪",
+    poly:[[110.3,31.4],[116.7,31.4],[116.7,36.4],[110.3,36.4]]
+  },
+  {
+    name:"湖北省",
+    popDensity:310,
+    oldChildRatio:0.28,
+    elev:300,
+    terrainType:"江汉平原+山地",
+    terrainDesc:"江汉平原低洼易涝，鄂西山区地质灾害风险高",
+    poly:[[108.2,29.0],[116.1,29.0],[116.1,33.3],[108.2,33.3]]
+  },
+  {
+    name:"湖南省",
+    popDensity:315,
+    oldChildRatio:0.29,
+    elev:350,
+    terrainType:"江南丘陵，洞庭湖平原",
+    terrainDesc:"湖区洪涝风险高，湘西山丘滑坡泥石流风险突出",
+    poly:[[108.8,24.6],[114.3,24.6],[114.3,30.1],[108.8,30.1]]
+  },
+  {
+    name:"广东省",
+    popDensity:590,
+    oldChildRatio:0.25,
+    elev:110,
+    terrainType:"沿海平原+丘陵",
+    terrainDesc:"华南沿海，常年受台风袭击；珠三角城市群暴露度极高",
+    poly:[[109.6,20.1],[117.4,20.1],[117.4,25.5],[109.6,25.5]]
+  },
+  {
+    name:"广西壮族自治区",
+    popDensity:212,
+    oldChildRatio:0.27,
+    elev:300,
+    terrainType:"喀斯特丘陵山地，沿海平原",
+    terrainDesc:"喀斯特地貌广布，强降雨易诱发滑坡、内涝",
+    poly:[[104.4,20.9],[112.1,20.9],[112.1,26.4],[104.4,26.4]]
+  },
+  {
+    name:"海南省",
+    popDensity:290,
+    oldChildRatio:0.28,
+    elev:120,
+    terrainType:"沿海平原+中部山地",
+    terrainDesc:"我国台风高频登陆区域，中部山区地质灾害风险大",
+    poly:[[108.6,18.0],[111.1,18.0],[111.1,20.2],[108.6,20.2]]
+  },
+  {
+    name:"重庆市",
+    popDensity:389,
+    oldChildRatio:0.28,
+    elev:400,
+    terrainType:"川东平行岭谷，山地为主",
+    terrainDesc:"山城地形，强降雨极易诱发滑坡、崩塌、山洪",
+    poly:[[105.2,28.1],[110.2,28.1],[110.2,32.2],[105.2,32.2]]
+  },
+  {
+    name:"四川省",
+    popDensity:172,
+    oldChildRatio:0.29,
+    elev:2500,
+    terrainType:"川西高原+四川盆地",
+    terrainDesc:"盆地人口稠密，川西高原地质复杂，暴雨灾害风险高",
+    poly:[[97.3,26.0],[108.4,26.0],[108.4,34.3],[97.3,34.3]]
+  },
+  {
+    name:"贵州省",
+    popDensity:207,
+    oldChildRatio:0.29,
+    elev:1100,
+    terrainType:"云贵高原喀斯特山地",
+    terrainDesc:"喀斯特山区，降雨易诱发滑坡、泥石流、洼地内涝",
+    poly:[[103.6,24.5],[109.6,24.5],[109.6,29.2],[103.6,29.2]]
+  },
+  {
+    name:"云南省",
+    popDensity:120,
+    oldChildRatio:0.28,
+    elev:1900,
+    terrainType:"云贵高原，高山峡谷",
+    terrainDesc:"山高谷深，地质不稳定，暴雨诱发滑坡泥石流风险极高",
+    poly:[[97.5,21.1],[106.2,21.1],[106.2,29.3],[97.5,29.3]]
+  },
+  {
+    name:"西藏自治区",
+    popDensity:3,
+    oldChildRatio:0.24,
+    elev:4000,
+    terrainType:"青藏高原",
+    terrainDesc:"海拔极高，人口极度稀疏，台风无法抵达",
+    poly:[[78.4,26.8],[99.1,26.8],[99.1,36.5],[78.4,36.5]]
+  },
+  {
+    name:"陕西省",
+    popDensity:186,
+    oldChildRatio:0.29,
+    elev:1100,
+    terrainType:"陕北高原、关中平原、秦巴山地",
+    terrainDesc:"秦岭山区暴雨易诱发山洪滑坡，关中平原洪涝风险",
+    poly:[[105.5,31.7],[111.2,31.7],[111.2,39.6],[105.5,39.6]]
+  },
+  {
+    name:"甘肃省",
+    popDensity:58,
+    oldChildRatio:0.28,
+    elev:1600,
+    terrainType:"黄土高原、河西走廊、山地",
+    terrainDesc:"人口稀疏，黄土区暴雨易诱发滑坡，台风难以抵达",
+    poly:[[92.1,32.6],[108.7,32.6],[108.7,42.8],[92.1,42.8]]
+  },
+  {
+    name:"青海省",
+    popDensity:8,
+    oldChildRatio:0.25,
+    elev:3000,
+    terrainType:"青藏高原，高原盆地",
+    terrainDesc:"海拔极高，人口稀少，台风无法抵达",
+    poly:[[89.4,31.6],[103.1,31.6],[103.1,39.2],[89.4,39.2]]
+  },
+  {
+    name:"宁夏回族自治区",
+    popDensity:108,
+    oldChildRatio:0.27,
+    elev:1100,
+    terrainType:"黄土高原+宁夏平原",
+    terrainDesc:"人口集中在平原，山区短时暴雨山洪风险，台风无法抵达",
+    poly:[[104.0,35.2],[106.7,35.2],[106.7,39.4],[104.0,39.4]]
+  },
+  {
+    name:"新疆维吾尔自治区",
+    popDensity:15,
+    oldChildRatio:0.17,
+    elev:1200,
+    terrainType:"盆地、高原、荒漠",
+    terrainDesc:"深居内陆，台风无法抵达，人口暴露极低",
+    poly:[[73.5,34.0],[96.5,34.0],[96.5,49.0],[73.5,49.0]]
+  },
+  {
+    name:"台湾省",
+    popDensity:650,
+    oldChildRatio:0.26,
+    elev:1100,
+    terrainType:"中部山地，东西沿海平原",
+    terrainDesc:"西北太平洋台风首要影响区域，山区滑坡泥石流风险极高",
+    poly:[[120.0,21.8],[122.0,21.8],[122.0,25.4],[120.0,25.4]]
+  },
+  {
+    name:"香港特别行政区",
+    popDensity:6781,
+    oldChildRatio:0.24,
+    elev:30,
+    terrainType:"滨海丘陵，沿海平地",
+    terrainDesc:"人口高度稠密，台风大风、风暴潮、山洪风险显著",
+    poly:[[113.8,22.1],[114.3,22.1],[114.3,22.6],[113.8,22.6]]
+  },
+  {
+    name:"澳门特别行政区",
+    popDensity:21000,
+    oldChildRatio:0.23,
+    elev:10,
+    terrainType:"滨海填海平原，地势低平",
+    terrainDesc:"人口极度密集，风暴潮与内涝风险极高",
+    poly:[[113.5,22.0],[113.6,22.0],[113.6,22.2],[113.5,22.2]]
+  }
+];
+
+// 海洋匹配
+function isOcean(lng,lat){
+  if(lat <22 && lng>105 && lng<125) return true;
+  return false;
+}
+
+// 根据经纬度匹配省份，直接拿到省份内置高程、人口密度
+function getProvinceInfo(lng,lat){
+  const pt = [lng,lat];
+  for(let p of provinceList){
+    if(pointInPolygon(pt, p.poly)){
+      return p;
+    }
+  }
+  if(isOcean(lng,lat)){
+    return {
+      name:"南海海域",
+      popDensity:0,
+      oldChildRatio:0,
+      elev:0,
+      terrainType:"海洋",
+      terrainDesc:"海域，无常住人口，仅威胁海上船舶、岛礁设施"
+    }
+  }
+  return {
+    name:"其他区域",
+    popDensity:260,
+    oldChildRatio:0.24,
+    elev:200,
+    terrainType:"复杂地形",
+    terrainDesc:"地形复杂，需结合实地高程、流域做精细化风险研判"
+  };
+}
+
+// 高程转地形风险分
+function calcTerrainRiskScore(elev, provinceInfo){
+  let score = 0;
+  if(elev <50) score += 2.2;
+  else if(elev<200) score +=1.0;
+  else if(elev <800) score +=1.6;
+  else score +=0.4;
+
+  if(provinceInfo.terrainType.indexOf("山地")>=0){
+    score += 1.2;
+  }
+  if(provinceInfo.terrainType.indexOf("平原")>=0){
+    score +=0.6;
+  }
+  return score;
+}
+
+// ========== 地图初始化 ==========
+function initMap(){
+  map = new AMap.Map("container", {
+    zoom: 6,
+    center: [120.0,32.0],
+  });
+
+  // 【黑白修改】风圈全部替换为灰度
+  circle7 = new AMap.Circle({
+    center:[120.0,32.0],
+    radius: 120*1000,
+    strokeColor:"#444444",
+    strokeWeight:2,
+    fillColor:"#777777",
+    fillOpacity:0.12
+  })
+  circle10 = new AMap.Circle({
+    center:[120.0,32.0],
+    radius:60*1000,
+    strokeColor:"#2b2b2b",
+    strokeWeight:2,
+    fillColor:"#444444",
+    fillOpacity:0.18
+  })
+  circle12 = new AMap.Circle({
+    center:[120.0,32.0],
+    radius:25*1000,
+    strokeColor:"#111111",
+    strokeWeight:2,
+    fillColor:"#222222",
+    fillOpacity:0.22
+  })
+
+  typhoonMarker = new AMap.Marker({
+    position:[120.0,32.0],
+    title:"台风中心（可拖拽）",
+    draggable:true
+  })
+
+  typhoonMarker.on('dragend', function(e){
+    const pos = e.target.getPosition();
+    typhoonData.lng = pos.lng;
+    typhoonData.lat = pos.lat;
+    updateTyphoonOverlay();
+  })
+
+  map.add([circle7, circle10, circle12, typhoonMarker]);
+}
+
+function updateTyphoonOverlay(){
+  const center = [typhoonData.lng, typhoonData.lat];
+  circle7.setCenter(center);
+  circle10.setCenter(center);
+  circle12.setCenter(center);
+  typhoonMarker.setPosition(center);
+
+  const r7 = calcR7(typhoonData.wind);
+  const r10 = calcR10(typhoonData.wind);
+  const r12 = calcR12(typhoonData.wind);
+
+  circle7.setRadius(r7 * 1000);
+  circle10.setRadius(r10 * 1000);
+  circle12.setRadius(r12 * 1000);
+  typhoonData.radius = r7;
+}
+
+function initTyphoonData(windSpeed=35){
+  typhoonData = {
+    name:"模拟台风",
+    lng:120.0,
+    lat:32.0,
+    wind: windSpeed,
+    pressure: 1005 - windSpeed*0.85,
+    moveDir:"西北",
+    moveSpeed:18,
+    radius: calcR7(windSpeed)
+  }
+  updateTyphoonOverlay();
+}
+
+// ========== 综合风险评估【受灾人口估算逻辑】 ==========
+function evaluateRisk(){
+  const wind = typhoonData.wind;
+  const lng = typhoonData.lng;
+  const lat = typhoonData.lat;
+  const provinceInfo = getProvinceInfo(lng,lat);
+  const elev = provinceInfo.elev;
+  const R7 = typhoonData.radius;
+
+  // 7级风圈面积 km²
+  const area7 = Math.PI * R7 * R7;
+  // 预估受灾人口 = 风圈面积 × 人口密度 × 脆弱人口暴露系数
+  let estimatedAffected = area7 * provinceInfo.popDensity * provinceInfo.oldChildRatio;
+  if(provinceInfo.name === "南海海域") estimatedAffected = 0;
+  estimatedAffected = Math.round(estimatedAffected);
+
+  let windScore = 0;
+  if(wind < AGENT_CONFIG.windThreshold.low) windScore=1;
+  else if(wind < AGENT_CONFIG.windThreshold.mid) windScore=2;
+  else if(wind < AGENT_CONFIG.windThreshold.high) windScore=3;
+  else windScore=4;
+
+  const vulScore = provinceInfo.popDensity / 300 * provinceInfo.oldChildRatio * 10;
+  const terrainScore = calcTerrainRiskScore(elev, provinceInfo);
+
+  const totalScore = windScore * AGENT_CONFIG.windWeight
+    + vulScore * AGENT_CONFIG.vulnerableWeight
+    + terrainScore * AGENT_CONFIG.terrainWeight;
+
+  if(totalScore <2) riskLevel="低风险";
+  else if(totalScore<3) riskLevel="中风险";
+  else if(totalScore<4) riskLevel="高风险";
+  else riskLevel="极高风险";
+
+  return {
+    totalScore,
+    riskLevel,
+    windScore,
+    vulScore,
+    terrainScore,
+    provinceInfo,
+    elev,
+    estimatedAffected
+  };
+}
+
+// ========== 修复报告模板：强制固定【预估受灾人口】行，不会丢失 ==========
+function generateLLMReport(evalResult){
+  const tc = getTyphoonClass(typhoonData.wind);
+  const prov = evalResult.provinceInfo;
+  const elev = evalResult.elev;
+  const affPop = evalResult.estimatedAffected;
+
+  let popStr = "";
+  if(affPop === 0){
+    popStr = "预估受灾人口：0人（海域无常住人口）";
+  }else if(affPop >= 100000000){
+    popStr = `预估受灾人口：${(affPop / 100000000).toFixed(2)} 亿人`;
+  }else if(affPop >=10000){
+    popStr = `预估受灾人口：${(affPop / 10000).toFixed(2)} 万人`;
+  }else{
+    popStr = `预估受灾人口：${affPop} 人`;
+  }
+
+  const reportText = `【模拟台风灾害评估报告】
+台风：${typhoonData.name}，台风等级：${tc}，综合风险等级：${evalResult.riskLevel}
+台风中心坐标：经度${typhoonData.lng.toFixed(2)}，纬度${typhoonData.lat.toFixed(2)}
+所属行政区：${prov.name}
+地形高程：${elev} m，地形类型：${prov.terrainType}
+${popStr}
+> 实况：中心风速${typhoonData.wind}m/s，中心气压${typhoonData.pressure.toFixed(0)}hPa，向西北移动。
+> 7级风圈半径：${typhoonData.radius.toFixed(1)}km；10级风圈：${calcR10(typhoonData.wind).toFixed(1)}km；12级风圈：${calcR12(typhoonData.wind).toFixed(1)}km
+> 区域特征：${prov.terrainDesc}
+> 风险研判：综合风险指数${evalResult.totalScore.toFixed(2)}。高程${elev}m，${elev<50?"地势低洼，暴雨易形成内涝":(elev>500?"山地地形，暴雨诱发滑坡泥石流风险高":"地势中等，需关注流域洪水")}
+> 应急建议：结合区域人口暴露与地形条件，优先转移低洼、山区危险区域人员，加固构筑物，监测雨情地质灾害。
+> 备注：受灾人口为简化模型估算，仅用于模拟演示，未精细考虑城镇分布、疏散、风圈跨多省情况。`;
+
+  document.getElementById("report").innerText = reportText;
+}
+
+// ========== p5画布 黑白配色 ==========
+function setup(){
+  p = createCanvas(windowWidth, 260);
+  background(240);
+  fill(20);
+  textSize(14);
+  initMap();
+  initTyphoonData(35);
+
+  const slider = document.getElementById("sliderWind");
+  const windTextDom = document.getElementById("windText");
+  slider.oninput = function(){
+    const newWind = Number(this.value);
+    typhoonData.wind = newWind;
+    typhoonData.pressure = 1005 - newWind*0.85;
+    windTextDom.innerText = newWind;
+    updateTyphoonOverlay();
+  }
+
+  document.getElementById("genReportBtn").addEventListener("click", ()=>{
+    try{
+      const res = evaluateRisk();
+      generateLLMReport(res);
+    }catch(err){
+      console.error(err);
+      document.getElementById("report").innerText = "评估计算异常！";
+    }
+  })
+}
+
+function draw(){
+  background(245);
+  fill(18);
+  textSize(14);
+  const tc = getTyphoonClass(typhoonData.wind);
+  const prov = getProvinceInfo(typhoonData.lng, typhoonData.lat);
+  text(`台风Agent实时状态`, 20, 30);
+  text(`台风名称：${typhoonData.name}`, 20, 55);
+  text(`台风等级：${tc}`, 20, 80);
+  text(`中心风速：${typhoonData.wind} m/s`, 20,105);
+  text(`7级风圈半径：${typhoonData.radius.toFixed(1)} km`, 20,130);
+  text(`所属省份：${prov.name}`, 20,155);
+  text(`综合风险等级：${riskLevel}`, 20,180);
+
+  if(typhoonData.lng){
+    push();
+    noFill();
+    stroke(130,130,130,110);
+    strokeWeight(2);
+    ellipse(width/2, height/2, typhoonData.radius*1.2, typhoonData.radius*1.2);
+    stroke(70,70,70,130);
+    ellipse(width/2, height/2, calcR10(typhoonData.wind)*1.2, calcR10(typhoonData.wind)*1.2);
+    stroke(20,20,20,150);
+    ellipse(width/2, height/2, calcR12(typhoonData.wind)*1.2, calcR12(typhoonData.wind)*1.2);
+    pop();
+  }
+}
+
+function windowResized(){
+  resizeCanvas(windowWidth, 260);
+}
+</script>
+</body>
+</html>
